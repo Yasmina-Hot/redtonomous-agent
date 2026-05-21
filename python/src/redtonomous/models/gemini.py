@@ -97,8 +97,7 @@ class GeminiAdapter(ModelAdapter):
             output_tokens=getattr(usage, "candidates_token_count", 0),
         )
 
-    @staticmethod
-    def build_tool_result_message(tool_calls: list[ToolCall], results: list[tuple[str, bool]]) -> list[dict]:
+    def build_tool_result_messages(self, tool_calls: list[ToolCall], results: list[tuple[str, bool]]) -> list[dict]:
         # Gemini uses model parts with function_call then user parts with function_response
         model_parts = [
             {"type": "function_call", "name": tc.name, "args": tc.args}

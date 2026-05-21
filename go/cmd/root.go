@@ -209,22 +209,36 @@ func getAdapter(provider, model string, cfg config.AppConfig) (models.Adapter, e
 	apiKey := config.GetAPIKey(cfg, provider)
 	baseURL := config.GetBaseURL(cfg, provider)
 
-	if provider == "claude" {
+	switch provider {
+	case "claude":
 		if apiKey == "" {
 			return nil, fmt.Errorf("no API key for claude. Run: redtonomous config set-key claude <key>")
 		}
 		return models.NewClaudeAdapter(apiKey, model), nil
-	}
 
-	// OpenAI-compatible
-	isLocal := provider == "ollama" || provider == "lmstudio"
-	if apiKey == "" && !isLocal {
-		return nil, fmt.Errorf("no API key for %s. Run: redtonomous config set-key %s <key>", provider, provider)
+	case "gemini", "cohere", "mistral":
+		// Native SDK adapters — not yet implemented in the Go version.
+		// Use the Python or TypeScript version for these providers.
+		return nil, fmt.Errorf(
+			"provider '%s' requires its native SDK and is not yet implemented in the Go version.\n"+
+				"Use the Python or TypeScript CLI instead:\n  cd python && pip install -e . && redtonomous run ...",
+			provider,
+		)
+
+	default:
+		// Treat everything else as OpenAI-compatible (openai, groq, ollama, lmstudio, openrouter, etc.)
+		isLocal := provider == "ollama" || provider == "lmstudio"
+		if apiKey == "" && !isLocal {
+			return nil, fmt.Errorf("no API key for %s. Run: redtonomous config set-key %s <key>", provider, provider)
+		}
+		if apiKey == "" {
+			apiKey = "none"
+		}
+		if baseURL == "" && !isLocal {
+			return nil, fmt.Errorf("unknown provider '%s'. Add it with: redtonomous config add-provider %s <base_url>", provider, provider)
+		}
+		return models.NewOpenAICompatAdapter(apiKey, model, baseURL), nil
 	}
-	if apiKey == "" {
-		apiKey = "none"
-	}
-	return models.NewOpenAICompatAdapter(apiKey, model, baseURL), nil
 }
 
 func printBanner() {

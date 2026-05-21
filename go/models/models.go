@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -29,9 +30,14 @@ type ModelResponse struct {
 }
 
 // Message is a generic chat message.
+// Content is either:
+//   - string (plain user/assistant text)
+//   - []interface{} of map[string]interface{} entries with a "__msg_type" key:
+//       "__msg_type": "assistant_tool_calls" — assistant turn with tool invocations
+//       "__msg_type": "tool_result"          — tool result turn
 type Message struct {
 	Role    string
-	Content interface{} // string or []interface{}
+	Content interface{}
 }
 
 // Adapter is the interface every provider implements.
@@ -44,6 +50,12 @@ type Adapter interface {
 type ToolResult struct {
 	Content string
 	IsError bool
+}
+
+func logUnmarshalErr(context string, err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[redtonomous] JSON unmarshal error (%s): %v\n", context, err)
+	}
 }
 
 // ─── Claude ────────────────────────────────────────────────────────────────
@@ -69,10 +81,13 @@ func (a *ClaudeAdapter) Chat(messages []Message, toolDefs []tools.ToolDef, syste
 				anthropicMsgs = append(anthropicMsgs, anthropic.NewAssistantMessage(anthropic.NewTextBlock(v)))
 			}
 		case []interface{}:
-			// tool result messages stored as raw blocks
-			data, _ := json.Marshal(v)
+			data, err := json.Marshal(v)
+			logUnmarshalErr("claude message marshal", err)
 			var blocks []anthropic.ContentBlockParamUnion
-			_ = json.Unmarshal(data, &blocks)
+			if err2 := json.Unmarshal(data, &blocks); err2 != nil {
+				logUnmarshalErr("claude message blocks", err2)
+				continue
+			}
 			if m.Role == "user" {
 				anthropicMsgs = append(anthropicMsgs, anthropic.MessageParam{Role: anthropic.MessageParamRoleUser, Content: blocks})
 			} else {
@@ -85,7 +100,10 @@ func (a *ClaudeAdapter) Chat(messages []Message, toolDefs []tools.ToolDef, syste
 	for _, t := range toolDefs {
 		data, _ := json.Marshal(t.Parameters)
 		var schema anthropic.ToolInputSchemaParam
-		_ = json.Unmarshal(data, &schema)
+		if err := json.Unmarshal(data, &schema); err != nil {
+			logUnmarshalErr("claude tool schema: "+t.Name, err)
+			continue
+		}
 		anthropicTools = append(anthropicTools, anthropic.ToolParam{
 			Name:        t.Name,
 			Description: anthropic.String(t.Description),
@@ -112,7 +130,10 @@ func (a *ClaudeAdapter) Chat(messages []Message, toolDefs []tools.ToolDef, syste
 			text += b.Text
 		case anthropic.ToolUseBlock:
 			var args map[string]interface{}
-			_ = json.Unmarshal(b.Input, &args)
+			if err := json.Unmarshal(b.Input, &args); err != nil {
+				logUnmarshalErr("claude tool_use args: "+b.Name, err)
+				args = map[string]interface{}{}
+			}
 			toolCalls = append(toolCalls, ToolCall{ID: b.ID, Name: b.Name, Args: args})
 		}
 	}
@@ -122,10 +143,10 @@ func (a *ClaudeAdapter) Chat(messages []Message, toolDefs []tools.ToolDef, syste
 		stopReason = "tool_use"
 	}
 	return &ModelResponse{
-		Text:        text,
-		StopReason:  stopReason,
-		ToolCalls:   toolCalls,
-		InputTokens: int(resp.Usage.InputTokens),
+		Text:         text,
+		StopReason:   stopReason,
+		ToolCalls:    toolCalls,
+		InputTokens:  int(resp.Usage.InputTokens),
 		OutputTokens: int(resp.Usage.OutputTokens),
 	}, nil
 }
@@ -178,6 +199,7 @@ func (a *OpenAICompatAdapter) Chat(messages []Message, toolDefs []tools.ToolDef,
 	if system != "" {
 		chatMsgs = append(chatMsgs, openai.SystemMessage(system))
 	}
+
 	for _, m := range messages {
 		switch v := m.Content.(type) {
 		case string:
@@ -187,13 +209,46 @@ func (a *OpenAICompatAdapter) Chat(messages []Message, toolDefs []tools.ToolDef,
 				chatMsgs = append(chatMsgs, openai.AssistantMessage(v))
 			}
 		case []interface{}:
-			// For tool calls/results stored as raw maps
-			data, _ := json.Marshal(v)
-			var raw []map[string]interface{}
-			_ = json.Unmarshal(data, &raw)
-			for _, item := range raw {
-				if item["role"] == "tool" {
-					chatMsgs = append(chatMsgs, openai.ToolMessage(fmt.Sprint(item["content"]), fmt.Sprint(item["tool_call_id"])))
+			if len(v) == 0 {
+				continue
+			}
+			firstItem, ok := v[0].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			switch firstItem["__msg_type"] {
+			case "assistant_tool_calls":
+				// Reconstruct the assistant message with tool_calls for history.
+				var toolCallParams []openai.ChatCompletionMessageToolCallParam
+				for _, raw := range v {
+					tc, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					toolCallParams = append(toolCallParams, openai.ChatCompletionMessageToolCallParam{
+						ID:   fmt.Sprint(tc["id"]),
+						Type: "function",
+						Function: openai.ChatCompletionMessageToolCallFunctionParam{
+							Name:      fmt.Sprint(tc["name"]),
+							Arguments: fmt.Sprint(tc["arguments"]),
+						},
+					})
+				}
+				chatMsgs = append(chatMsgs, openai.ChatCompletionMessageParamUnion{
+					OfAssistant: &openai.ChatCompletionAssistantMessageParam{
+						ToolCalls: toolCallParams,
+					},
+				})
+			case "tool_result":
+				for _, raw := range v {
+					item, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					chatMsgs = append(chatMsgs, openai.ToolMessage(
+						fmt.Sprint(item["content"]),
+						fmt.Sprint(item["tool_call_id"]),
+					))
 				}
 			}
 		}
@@ -203,7 +258,10 @@ func (a *OpenAICompatAdapter) Chat(messages []Message, toolDefs []tools.ToolDef,
 	for _, t := range toolDefs {
 		data, _ := json.Marshal(t.Parameters)
 		var params openai.FunctionParameters
-		_ = json.Unmarshal(data, &params)
+		if err := json.Unmarshal(data, &params); err != nil {
+			logUnmarshalErr("openai tool params: "+t.Name, err)
+			continue
+		}
 		openaiTools = append(openaiTools, openai.ChatCompletionToolParam{
 			Type: "function",
 			Function: openai.FunctionDefinitionParam{
@@ -228,7 +286,10 @@ func (a *OpenAICompatAdapter) Chat(messages []Message, toolDefs []tools.ToolDef,
 	var toolCalls []ToolCall
 	for _, tc := range msg.ToolCalls {
 		var args map[string]interface{}
-		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			logUnmarshalErr("openai tool_call args: "+tc.Function.Name, err)
+			args = map[string]interface{}{}
+		}
 		toolCalls = append(toolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: args})
 	}
 
@@ -246,34 +307,33 @@ func (a *OpenAICompatAdapter) Chat(messages []Message, toolDefs []tools.ToolDef,
 }
 
 func (a *OpenAICompatAdapter) BuildToolResultMessages(toolCalls []ToolCall, results []ToolResult) []Message {
-	var tcList []interface{}
+	// Pack assistant tool_calls as []interface{} with a __msg_type marker.
+	// The Chat() method detects this and reconstructs the proper SDK types.
+	var tcSlice []interface{}
 	for _, tc := range toolCalls {
 		argsJSON, _ := json.Marshal(tc.Args)
-		tcList = append(tcList, map[string]interface{}{
-			"id":   tc.ID,
-			"type": "function",
-			"function": map[string]interface{}{
-				"name":      tc.Name,
-				"arguments": string(argsJSON),
-			},
+		tcSlice = append(tcSlice, map[string]interface{}{
+			"__msg_type": "assistant_tool_calls",
+			"id":         tc.ID,
+			"name":       tc.Name,
+			"arguments":  string(argsJSON),
 		})
 	}
-	assistantMsg := Message{Role: "assistant", Content: map[string]interface{}{
-		"content":    nil,
-		"tool_calls": tcList,
-	}}
-	msgs := []Message{assistantMsg}
+
+	// Tool results are grouped into a single []interface{} for one message.
+	var resultSlice []interface{}
 	for i, tc := range toolCalls {
-		msgs = append(msgs, Message{
-			Role: "tool",
-			Content: []interface{}{map[string]interface{}{
-				"role":         "tool",
-				"tool_call_id": tc.ID,
-				"content":      results[i].Content,
-			}},
+		resultSlice = append(resultSlice, map[string]interface{}{
+			"__msg_type":   "tool_result",
+			"tool_call_id": tc.ID,
+			"content":      results[i].Content,
 		})
 	}
-	return msgs
+
+	return []Message{
+		{Role: "assistant", Content: tcSlice},
+		{Role: "user", Content: resultSlice},
+	}
 }
 
 // ─── Registry ──────────────────────────────────────────────────────────────
@@ -290,8 +350,8 @@ var KnownModels = []ModelInfo{
 	{"claude",     "claude-haiku-4-5",             "claude"},
 	{"openai",     "gpt-4o",                       "openai-compat"},
 	{"openai",     "gpt-4o-mini",                  "openai-compat"},
-	{"gemini",     "gemini-2.5-pro",               "gemini (REST)"},
-	{"gemini",     "gemini-2.0-flash",             "gemini (REST)"},
+	{"gemini",     "gemini-2.5-pro",               "gemini (Python/TS only)"},
+	{"gemini",     "gemini-2.0-flash",             "gemini (Python/TS only)"},
 	{"groq",       "llama-3.3-70b-versatile",      "openai-compat"},
 	{"groq",       "mixtral-8x7b-32768",           "openai-compat"},
 	{"openrouter", "openai/gpt-4o",                "openai-compat"},

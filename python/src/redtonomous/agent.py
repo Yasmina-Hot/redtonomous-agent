@@ -5,11 +5,6 @@ from pathlib import Path
 
 from . import display
 from .models.base import ModelAdapter, ToolCall
-from .models.claude import ClaudeAdapter
-from .models.gemini import GeminiAdapter
-from .models.mistral import MistralAdapter
-from .models.cohere import CohereAdapter
-from .models.openai_compat import OpenAICompatAdapter
 from .tools.definitions import TOOLS
 from .tools.executor import execute_tool
 
@@ -31,22 +26,6 @@ Working directory: {cwd}
 Provider: {provider} | Model: {model}
 """
 
-
-def _build_tool_result_messages(
-    adapter: ModelAdapter,
-    tool_calls: list[ToolCall],
-    results: list[tuple[str, bool]],
-) -> list[dict]:
-    if isinstance(adapter, ClaudeAdapter):
-        return ClaudeAdapter.build_tool_result_message(tool_calls, results)
-    if isinstance(adapter, GeminiAdapter):
-        return GeminiAdapter.build_tool_result_message(tool_calls, results)
-    if isinstance(adapter, MistralAdapter):
-        return MistralAdapter.build_tool_result_message(tool_calls, results)
-    if isinstance(adapter, CohereAdapter):
-        return CohereAdapter.build_tool_result_message(tool_calls, results)
-    # Default: OpenAI-compat
-    return OpenAICompatAdapter.build_tool_result_message(tool_calls, results)
 
 
 def run(
@@ -108,7 +87,7 @@ def run(
                 "error": is_error,
             })
 
-        new_msgs = _build_tool_result_messages(adapter, resp.tool_calls, results)
+        new_msgs = adapter.build_tool_result_messages(resp.tool_calls, results)
         messages.extend(new_msgs)
 
     else:

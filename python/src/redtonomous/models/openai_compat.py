@@ -52,8 +52,7 @@ class OpenAICompatAdapter(ModelAdapter):
             output_tokens=getattr(resp.usage, "completion_tokens", 0),
         )
 
-    @staticmethod
-    def build_tool_result_message(tool_calls: list[ToolCall], results: list[tuple[str, bool]]) -> list[dict]:
+    def build_tool_result_messages(self, tool_calls: list[ToolCall], results: list[tuple[str, bool]]) -> list[dict]:
         assistant_msg: dict = {
             "role": "assistant",
             "content": None,

@@ -58,8 +58,19 @@ class CohereAdapter(ModelAdapter):
         stop_reason = "tool_use" if tool_calls else "end_turn"
         return ModelResponse(text=text, stop_reason=stop_reason, tool_calls=tool_calls)
 
-    @staticmethod
-    def build_tool_result_message(tool_calls: list[ToolCall], results: list[tuple[str, bool]]) -> list[dict]:
+    def build_tool_result_messages(self, tool_calls: list[ToolCall], results: list[tuple[str, bool]]) -> list[dict]:
+        # Cohere v2 needs the assistant turn with tool_calls FIRST, then the tool results.
+        assistant_msg: dict = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
+                }
+                for tc in tool_calls
+            ],
+        }
         tool_msgs = [
             {
                 "role": "tool",
@@ -68,4 +79,4 @@ class CohereAdapter(ModelAdapter):
             }
             for tc, (result, _) in zip(tool_calls, results)
         ]
-        return tool_msgs
+        return [assistant_msg, *tool_msgs]

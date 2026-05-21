@@ -41,8 +41,7 @@ class ClaudeAdapter(ModelAdapter):
             output_tokens=resp.usage.output_tokens,
         )
 
-    @staticmethod
-    def build_tool_result_message(tool_calls: list[ToolCall], results: list[tuple[str, bool]]) -> list[dict]:
+    def build_tool_result_messages(self, tool_calls: list[ToolCall], results: list[tuple[str, bool]]) -> list[dict]:
         """Build the Anthropic-format assistant + tool_result message pair."""
         assistant_content = [
             {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}

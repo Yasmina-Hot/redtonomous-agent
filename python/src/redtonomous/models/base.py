@@ -29,3 +29,12 @@ class ModelAdapter(ABC):
         system: str = "",
     ) -> ModelResponse:
         ...
+
+    @abstractmethod
+    def build_tool_result_messages(
+        self,
+        tool_calls: list[ToolCall],
+        results: list[tuple[str, bool]],
+    ) -> list[dict]:
+        """Return the provider-specific messages to append after tool execution."""
+        ...

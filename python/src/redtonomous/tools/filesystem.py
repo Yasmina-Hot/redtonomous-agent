@@ -18,18 +18,24 @@ def read_file(path: str) -> str:
 
 
 def write_file(path: str, content: str) -> str:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
-    return f"OK: wrote {len(content)} bytes to {path}"
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+        return f"OK: wrote {len(content)} bytes to {path}"
+    except Exception as e:
+        return f"ERROR: {e}"
 
 
 def append_file(path: str, content: str) -> str:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "a") as f:
-        f.write(content)
-    return f"OK: appended {len(content)} bytes to {path}"
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as f:
+            f.write(content)
+        return f"OK: appended {len(content)} bytes to {path}"
+    except Exception as e:
+        return f"ERROR: {e}"
 
 
 def list_directory(path: str, recursive: bool = False) -> str:
