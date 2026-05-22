@@ -22,3 +22,7 @@ dist/
 .DS_Store
 .env
 *.log
+web/chat/.next/
+web/rdx/.next/
+web/chat/next-env.d.ts
+web/rdx/next-env.d.ts
