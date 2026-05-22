@@ -1,0 +1,31 @@
+name: Deploy RDX → Vercel
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "web/rdx/**"
+      - ".github/workflows/deploy-rdx.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Link / create Vercel project and deploy
+        working-directory: web/rdx
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          vercel link --yes --project=redtonomous-rdx --token=$VERCEL_TOKEN 2>/dev/null || true
+          npm install --legacy-peer-deps
+          vercel deploy --prod --yes --token=$VERCEL_TOKEN
