@@ -73,3 +73,8 @@ export function printRule(label = ""): void {
   const line = "─".repeat(60);
   console.log(label ? chalk.red.bold(line + " " + label + " " + line) : chalk.dim(line));
 }
+
+export function printReplPrompt(provider: string, model: string, cwd: string): void {
+  const shortCwd = cwd.split("/").pop() || cwd;
+  process.stdout.write(chalk.dim(`(${provider}/${model} · ${shortCwd})  `));
+}

@@ -16,7 +16,12 @@ export interface ProviderConfig {
 export interface AppConfig {
   default_provider: string;
   default_model: string;
+  wake_word?: string;
   providers: Record<string, ProviderConfig>;
+}
+
+export function getWakeWord(cfg: AppConfig): string | undefined {
+  return cfg.wake_word || undefined;
 }
 
 export const OPENAI_COMPAT_PROVIDERS: Record<string, { base_url: string; default_model: string }> = {

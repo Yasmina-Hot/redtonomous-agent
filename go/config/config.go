@@ -27,7 +27,13 @@ type ProviderConfig struct {
 type AppConfig struct {
 	DefaultProvider string                    `json:"default_provider"`
 	DefaultModel    string                    `json:"default_model"`
+	WakeWord        string                    `json:"wake_word,omitempty"`
 	Providers       map[string]ProviderConfig `json:"providers"`
+}
+
+// GetWakeWord returns the configured wake word, or empty string if not set.
+func GetWakeWord(cfg AppConfig) string {
+	return cfg.WakeWord
 }
 
 var OpenAICompatProviders = map[string]struct{ BaseURL, DefaultModel string }{

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -67,6 +69,16 @@ def print_error(msg: str) -> None:
 
 def print_info(msg: str) -> None:
     console.print(f"[dim]{escape(msg)}[/dim]")
+
+
+def print_repl_prompt(provider: str, model: str, cwd: str) -> str:
+    """Return the REPL prompt string (caller uses input() with it)."""
+    short_cwd = Path(cwd).name or cwd
+    console.print(
+        f"[dim]({provider}/{model} · {escape(short_cwd)})[/dim]",
+        end="  ",
+    )
+    return ""
 
 
 def models_table(models: list[dict]) -> None:

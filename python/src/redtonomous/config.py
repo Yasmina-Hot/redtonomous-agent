@@ -22,8 +22,13 @@ OPENAI_COMPAT_PROVIDERS = {
 DEFAULT_CONFIG: dict[str, Any] = {
     "default_provider": "claude",
     "default_model": "claude-sonnet-4-6",
+    "wake_word": None,
     "providers": {},
 }
+
+
+def get_wake_word(cfg: dict) -> str | None:
+    return cfg.get("wake_word") or None
 
 
 def load() -> dict[str, Any]:
