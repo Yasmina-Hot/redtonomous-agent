@@ -1,0 +1,43 @@
+name: Deploy RDX → Vercel
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "web/rdx/**"
+      - ".github/workflows/deploy-rdx.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check token
+        id: check
+        run: |
+          if [ -z "${{ secrets.VERCEL_TOKEN }}" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "::warning::VERCEL_TOKEN secret is not set. Add it at Settings → Secrets → Actions to enable auto-deploy."
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.skip == 'false'
+        with:
+          node-version: 22
+
+      - name: Install Vercel CLI
+        if: steps.check.outputs.skip == 'false'
+        run: npm install -g vercel@latest
+
+      - name: Deploy RDX to Vercel
+        if: steps.check.outputs.skip == 'false'
+        working-directory: web/rdx
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          npm install --legacy-peer-deps
+          vercel deploy --prod --yes --token=$VERCEL_TOKEN

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# TypeScript / Node
+node_modules/
+dist/
+*.js.map
+.npm
+
+# Go
+/go/redtonomous
+*.exe
+
+# Misc
+.DS_Store
+.env
+*.log
+web/chat/.next/
+web/rdx/.next/
+web/chat/next-env.d.ts
+web/rdx/next-env.d.ts
