@@ -9,6 +9,7 @@ import { SessionHistory } from "@/components/SessionHistory";
 import { TokenMeter } from "@/components/TokenMeter";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { PricingPanel } from "@/components/PricingPanel";
 import type { LayoutMode, StreamEvent } from "@/lib/types";
 
 const LAYOUT_ICONS: Record<LayoutMode, React.ReactNode> = {
@@ -138,6 +139,7 @@ export default function ChatPage() {
 
         {/* Actions */}
         <SessionHistory />
+        <PricingPanel />
         <SettingsPanel />
       </header>
 

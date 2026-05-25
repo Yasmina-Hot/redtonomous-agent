@@ -277,6 +277,16 @@ def run(
     checkpoint_every: int = 0,
     run_id: str | None = None,
     on_iteration: Callable[[int, RunResult], None] | None = None,
+    # ── Phase B extras ─────────────────────────────────────────────────────
+    style: str = "default",          # "concise" | "verbose" | "json" | "default"
+    sandbox: str = "full",           # "readonly" | "workdir" | "full"
+    test_cmd: str | None = None,      # post-iteration auto-test command
+    include_memory: bool = True,
+    include_conventions: bool = True,
+    include_repo_map: bool = False,
+    extra_urls: list[str] | None = None,
+    image_paths: list[str] | None = None,
+    architect: ModelAdapter | None = None,  # planning adapter (Aider-style)
 ) -> RunResult:
     """The single agent loop. All extras default to off — legacy callers
     continue to behave exactly as before.
@@ -298,12 +308,56 @@ def run(
 
     system = SYSTEM_PROMPT.format(cwd=cwd, provider=provider, model=model)
 
+    # Output style preamble — appended to the system prompt.
+    if style == "concise":
+        system += "\n\nResponse style: be concise. Skip preamble. No emojis."
+    elif style == "verbose":
+        system += "\n\nResponse style: explain your reasoning step by step."
+    elif style == "json":
+        system += "\n\nResponse style: emit only a final JSON object on completion."
+
+    # Sandbox = readonly removes mutating tools from the model's view.
+    if sandbox == "readonly":
+        tools_deny = list(tools_deny or []) + list(DESTRUCTIVE_TOOLS)
+
+    # Memory / conventions / repo map / @file refs / URL context.
+    from . import context as ctx_mod
+    extra_system, task = ctx_mod.assemble(
+        cwd=cwd,
+        task=task,
+        include_memory=include_memory,
+        include_conventions=include_conventions,
+        include_repo_map=include_repo_map,
+        extra_urls=extra_urls,
+    )
+    if extra_system:
+        system = system + "\n\n" + extra_system
+
+    # If --architect was provided, ask the planning adapter for a plan first.
+    if architect is not None and not plan_first:
+        try:
+            plan_resp = architect.chat(
+                messages=[{"role": "user", "content": f"Plan this work as 3-10 bullets:\n\n{task}"}],
+                tools=[],
+                system="You are a senior software architect. Plan only — do not execute.",
+            )
+            if plan_resp.text:
+                display.console.rule("[bold]Architect plan[/bold]")
+                display.console.print(plan_resp.text)
+                display.console.rule()
+                task = f"Here is an architect's plan:\n\n{plan_resp.text}\n\nExecute it:\n\n{task}"
+        except Exception as e:
+            display.print_info(f"Architect step skipped: {e}")
+
     if plan_first:
         if not _plan_first(adapter, task, system, yes=yes):
             display.print_info("Aborted at plan review.")
             return result
 
     messages = _hydrate_messages(task, resume)
+    # Attach screenshots as multimodal content on the first user turn.
+    if image_paths:
+        messages = _attach_images(messages, image_paths)
     session_log: list[dict] = list(resume.get("log", [])) if resume else []
 
     budget = Budget(cap_usd=budget_usd, model=model) if budget_usd > 0 else None
@@ -347,6 +401,21 @@ def run(
                 display.print_thinking(resp.text[:120])
 
             if not resp.tool_calls:
+                # Auto-test gate: if the model declares done but tests fail,
+                # surface the failure as another user turn so it can recover.
+                if test_cmd:
+                    test_out, ok = _run_test_cmd(test_cmd, cwd)
+                    if not ok:
+                        display.print_info("[--test] failed; asking the agent to fix.")
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Your task is not done yet — the test command "
+                                f"`{test_cmd}` failed.\n\nOutput:\n{test_out[:2000]}\n\n"
+                                "Fix the failure and try again."
+                            ),
+                        })
+                        continue
                 result.completed = True
                 result.final_text = resp.text or "(Task complete)"
                 display.print_final(result.final_text)
@@ -455,3 +524,59 @@ def _collect_touched(files: set[str], tc: ToolCall, cwd: str) -> None:
                 files.add(str(full))
             except (OSError, ValueError):
                 pass
+
+
+def _run_test_cmd(cmd: str, cwd: str) -> tuple[str, bool]:
+    """Run an auto-test command and return ``(combined_output, ok)``."""
+    try:
+        proc = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, cwd=cwd, timeout=600,
+        )
+        body = ""
+        if proc.stdout:
+            body += proc.stdout
+        if proc.stderr:
+            body += "\n" + proc.stderr
+        return body, proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        return f"ERROR: test command timed out after 600s ({cmd!r})", False
+    except OSError as e:
+        return f"ERROR: {e}", False
+
+
+def _attach_images(messages: list[dict], image_paths: list[str]) -> list[dict]:
+    """Convert the first user message into a multimodal content list so the
+    model receives the screenshot. Works for Anthropic-style content shapes;
+    other providers may ignore the image blocks.
+    """
+    import base64
+    import mimetypes
+
+    if not messages or messages[0].get("role") != "user":
+        return messages
+
+    blocks: list[dict] = []
+    text = messages[0].get("content")
+    if isinstance(text, str) and text.strip():
+        blocks.append({"type": "text", "text": text})
+
+    for path in image_paths:
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            continue
+        mime, _ = mimetypes.guess_type(path)
+        mime = mime or "image/png"
+        blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime,
+                "data": base64.b64encode(data).decode("ascii"),
+            },
+        })
+    if not blocks:
+        return messages
+    out = list(messages)
+    out[0] = {"role": "user", "content": blocks}
+    return out

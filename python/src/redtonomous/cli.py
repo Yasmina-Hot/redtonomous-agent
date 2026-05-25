@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from pathlib import Path
 
 import click
 from rich.prompt import Confirm
@@ -53,10 +54,13 @@ def main(ctx, model, provider, workdir):
         sys.exit(1)
 
     from .agent import run as agent_run
+    from .repl_commands import dispatch_slash, REPLState
+
+    state = REPLState(provider=provider, model=model, cwd=cwd, cfg=cfg)
 
     while True:
         try:
-            display.print_repl_prompt(provider, model, cwd)
+            display.print_repl_prompt(state.provider, state.model, state.cwd)
             task = input(f"{wake}> ").strip()
         except (EOFError, KeyboardInterrupt):
             display.console.print("\n[dim]Goodbye.[/dim]")
@@ -68,14 +72,32 @@ def main(ctx, model, provider, workdir):
             display.console.print("[dim]Goodbye.[/dim]")
             break
 
+        # Slash commands (Claude-Code-style): /help, /clear, /resume, /init,
+        # /model, /dir, /cost, /plans, /compact, plus user-defined under
+        # ~/.redtonomous/commands/*.md
+        if task.startswith("/"):
+            handled = dispatch_slash(task, state)
+            if handled is None:
+                continue  # command processed inline, no agent run
+            task = handled  # the slash command expanded into a regular task
+
+        # If state changed (e.g. /model), rebuild the adapter.
+        if state.provider != provider or state.model != model:
+            try:
+                adapter = get_adapter(state.provider, state.model, state.cfg)
+                provider, model = state.provider, state.model
+            except ValueError as e:
+                display.print_error(str(e))
+                continue
+
         agent_run(
             task=task,
             adapter=adapter,
-            provider=provider,
-            model=model,
-            cwd=cwd,
+            provider=state.provider,
+            model=state.model,
+            cwd=state.cwd,
             max_iterations=100,
-            backup=False,   # no backup per-task in REPL — would spam backups
+            backup=False,
             log=True,
         )
         display.console.rule()
@@ -134,6 +156,32 @@ def _common_options(f):
                      help="Comma-separated deny-list of tool names"),
         click.option("--fallback", default=None,
                      help="Comma list of provider[:model] failovers, e.g. openai:gpt-4o,gemini"),
+        click.option("--style",
+                     type=click.Choice(["default", "concise", "verbose", "json"]),
+                     default="default", show_default=True,
+                     help="Response style"),
+        click.option("--sandbox",
+                     type=click.Choice(["full", "workdir", "readonly"]),
+                     default="full", show_default=True,
+                     help="full = all tools; readonly = remove destructive tools"),
+        click.option("--test", "test_cmd", default=None,
+                     help="Run this command after the model declares done; "
+                          "on non-zero exit the model is asked to fix.")
+        ,
+        click.option("--repo-map", is_flag=True, default=False,
+                     help="Inject an Aider-style repo map into the system prompt"),
+        click.option("--with-url", "with_url", multiple=True,
+                     help="Fetch URL(s) and inject contents as context (repeatable)"),
+        click.option("--image", "image_paths", multiple=True,
+                     type=click.Path(exists=True, dir_okay=False),
+                     help="Attach an image to the first message (repeatable)"),
+        click.option("--architect", default=None,
+                     help="Use this 'provider[:model]' for the planning step "
+                          "before the editor model executes"),
+        click.option("--worktree", is_flag=True, default=False,
+                     help="Run inside a fresh git worktree; merge back on success"),
+        click.option("--notify/--no-notify", default=False,
+                     help="Fire a desktop notification when the task completes"),
     ]):
         f = decorator(f)
     return f
@@ -153,11 +201,20 @@ def _common_options(f):
 @_common_options
 def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id,
         budget_usd, max_hours, dry_run, plan_first, show_diff, git_commit_msg,
-        git_branch, tools_allow, tools_deny, fallback):
+        git_branch, tools_allow, tools_deny, fallback,
+        style, sandbox, test_cmd, repo_map, with_url, image_paths,
+        architect, worktree, notify):
     """Run TASK autonomously using the configured model."""
     display.print_banner()
 
     cfg, provider, model, cwd = _resolve_run_params(model, provider, workdir)
+
+    # Worktree isolation: spawn a fresh git worktree off HEAD and run there.
+    cleanup_wt = None
+    if worktree:
+        cwd, cleanup_wt = _make_worktree(cwd)
+        display.print_info(f"Running inside worktree: {cwd}")
+
     display.warn_autonomous(cwd, provider, model)
 
     if not yes:
@@ -167,6 +224,7 @@ def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id,
 
     try:
         adapter = _build_adapter(provider, model, cfg, fallback=fallback)
+        architect_adapter = _maybe_architect(architect, cfg)
     except ValueError as e:
         display.print_error(str(e))
         sys.exit(1)
@@ -181,6 +239,10 @@ def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id,
             display.print_error(str(e))
             sys.exit(1)
 
+    # Desktop notification = a synthetic on_done hook for this run.
+    if notify:
+        _install_notify_hook()
+
     from .agent import run as agent_run
     result = agent_run(
         task=task, adapter=adapter, provider=provider, model=model, cwd=cwd,
@@ -189,8 +251,91 @@ def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id,
         plan_first=plan_first, diff=show_diff, git_commit_msg=git_commit_msg,
         git_branch=git_branch,
         tools_allow=_split_csv(tools_allow), tools_deny=_split_csv(tools_deny),
+        style=style, sandbox=sandbox, test_cmd=test_cmd,
+        include_repo_map=repo_map,
+        extra_urls=list(with_url) if with_url else None,
+        image_paths=list(image_paths) if image_paths else None,
+        architect=architect_adapter,
     )
+    if cleanup_wt:
+        cleanup_wt(success=result.completed)
     sys.exit(result.exit_code)
+
+
+def _maybe_architect(spec: str | None, cfg: dict):
+    """Build a planning adapter from a 'provider[:model]' string."""
+    if not spec:
+        return None
+    if ":" in spec:
+        p, m = spec.split(":", 1)
+    else:
+        p, m = spec, cfg_module.get_default_model_for_provider(spec)
+    try:
+        return get_adapter(p, m, cfg)
+    except ValueError as e:
+        display.print_info(f"Architect adapter unavailable: {e}")
+        return None
+
+
+def _make_worktree(cwd: str):
+    """Create a fresh git worktree off HEAD; return (worktree_path, cleanup_fn).
+
+    The cleanup function removes the worktree after the run unless
+    ``success=True`` is passed, in which case the caller is responsible for
+    merging the changes back. We print the worktree path so the user can
+    inspect and merge manually.
+    """
+    import subprocess
+    import tempfile
+
+    if not os.path.isdir(os.path.join(cwd, ".git")):
+        display.print_info("Not a git repo — skipping --worktree.")
+        return cwd, None
+    tmp = tempfile.mkdtemp(prefix="redtonomous-wt-")
+    proc = subprocess.run(
+        ["git", "-C", cwd, "worktree", "add", "--detach", tmp],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        display.print_info(f"worktree add failed: {proc.stderr.strip()} — running in cwd instead")
+        return cwd, None
+
+    def _cleanup(success: bool) -> None:
+        if success:
+            display.print_info(f"Worktree kept at {tmp}.  Inspect + merge: cd {tmp}")
+            return
+        try:
+            subprocess.run(
+                ["git", "-C", cwd, "worktree", "remove", "--force", tmp],
+                capture_output=True, text=True, check=False,
+            )
+        except OSError:
+            pass
+
+    return tmp, _cleanup
+
+
+def _install_notify_hook() -> None:
+    """Wire up a temporary on_done hook that fires a desktop notification."""
+    import platform
+    import json as _json
+    from . import modes
+    hooks_file = Path(modes._hooks_path())  # pylint: disable=protected-access
+    existing: dict = {}
+    if hooks_file.exists():
+        try:
+            existing = _json.loads(hooks_file.read_text())
+        except (OSError, _json.JSONDecodeError):
+            existing = {}
+    sys_name = platform.system()
+    if sys_name == "Darwin":
+        existing["on_done"] = 'osascript -e "display notification \\"Redtonomous task done\\" with title \\"Redtonomous\\""'
+    elif sys_name == "Linux":
+        existing["on_done"] = 'command -v notify-send >/dev/null && notify-send Redtonomous "Task done"'
+    else:
+        existing["on_done"] = 'echo "[notify] Redtonomous task done"'
+    hooks_file.parent.mkdir(parents=True, exist_ok=True)
+    hooks_file.write_text(_json.dumps(existing, indent=2))
 
 
 # ── moonlight ─────────────────────────────────────────────────────────────────
@@ -657,6 +802,165 @@ def _write_snippet(shell_name: str, wake: str, snippet: str, rc_file: str) -> No
 def auth():
     """OAuth login for Claude (coming soon)."""
     display.print_info("OAuth login is on the roadmap. Use 'config set-key claude <key>' for now.")
+
+
+# ── init ──────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option("--dir", "-d", "workdir", default=None,
+              help="Project directory (default: cwd)")
+def init(workdir):
+    """Generate a REDTONOMOUS.md memory file for the current project.
+
+    The agent auto-reads this file on every run in the same directory.
+    """
+    from .repl_commands import _do_init
+    cwd = os.path.abspath(workdir or os.getcwd())
+    _do_init(cwd)
+
+
+# ── chat (no agent loop) ──────────────────────────────────────────────────────
+
+@main.command()
+@click.option("--model", "-m", default=None)
+@click.option("--provider", "-p", default=None)
+def chat(model, provider):
+    """Plain back-and-forth chat with the model (no tools, no loop).
+
+    Like Aider's ``/ask`` or Claude's web chat. Useful for design discussions
+    where you don't want the agent touching files.
+    """
+    cfg, provider, model, cwd = _resolve_run_params(model, provider, None)
+    try:
+        adapter = get_adapter(provider, model, cfg)
+    except ValueError as e:
+        display.print_error(str(e))
+        sys.exit(1)
+    display.print_info(f"chat mode — {provider}/{model}   (Ctrl-D to exit)")
+    history: list[dict] = []
+    while True:
+        try:
+            line = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            display.console.print()
+            break
+        if not line:
+            continue
+        if line.lower() in ("exit", "quit", ":q"):
+            break
+        history.append({"role": "user", "content": line})
+        try:
+            resp = adapter.chat(messages=history, tools=[], system="You are a helpful coding assistant.")
+        except Exception as e:
+            display.print_error(str(e))
+            continue
+        display.console.print(f"[bold]{provider}[/bold]> {resp.text}")
+        history.append({"role": "assistant", "content": resp.text or ""})
+
+
+# ── review (git diff review) ──────────────────────────────────────────────────
+
+def _capture_git_diff(cwd: str, ref: str | None) -> str:
+    import subprocess
+    args = ["git", "-C", cwd, "diff"]
+    if ref:
+        args.append(ref)
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    except OSError as e:
+        return f"(could not run git diff: {e})"
+    return proc.stdout or "(no diff)"
+
+
+@main.command()
+@click.option("--dir", "-d", "workdir", default=None)
+@click.option("--ref", default=None,
+              help="Diff this ref vs HEAD (e.g. origin/main); omitted = unstaged changes")
+@click.option("--model", "-m", default=None)
+@click.option("--provider", "-p", default=None)
+def review(workdir, ref, model, provider):
+    """Send the current git diff to the model and print a code review."""
+    cfg, provider, model, cwd = _resolve_run_params(model, provider, workdir)
+    diff_text = _capture_git_diff(cwd, ref)
+    if "(no diff)" in diff_text or not diff_text.strip():
+        display.print_info("Nothing to review — no diff.")
+        return
+    try:
+        adapter = get_adapter(provider, model, cfg)
+    except ValueError as e:
+        display.print_error(str(e))
+        sys.exit(1)
+    resp = adapter.chat(
+        messages=[{"role": "user", "content": f"Review this diff:\n\n{diff_text[:80000]}"}],
+        tools=[],
+        system=(
+            "You are a senior code reviewer. Be terse. Focus on correctness, "
+            "security, and obvious regressions. Skip style nits unless they "
+            "affect behavior. Quote file:line when you call something out."
+        ),
+    )
+    display.console.print(resp.text or "(no review produced)")
+
+
+# ── bug finder ───────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option("--dir", "-d", "workdir", default=None)
+@click.option("--ref", default=None)
+@click.option("--model", "-m", default=None)
+@click.option("--provider", "-p", default=None)
+def bug(workdir, ref, model, provider):
+    """Send the current git diff to the model and ask for bugs only."""
+    cfg, provider, model, cwd = _resolve_run_params(model, provider, workdir)
+    diff_text = _capture_git_diff(cwd, ref)
+    if "(no diff)" in diff_text or not diff_text.strip():
+        display.print_info("Nothing to inspect — no diff.")
+        return
+    try:
+        adapter = get_adapter(provider, model, cfg)
+    except ValueError as e:
+        display.print_error(str(e))
+        sys.exit(1)
+    resp = adapter.chat(
+        messages=[{"role": "user", "content": f"Find bugs in this diff:\n\n{diff_text[:80000]}"}],
+        tools=[],
+        system=(
+            "You are a bug-hunting reviewer. Output ONLY a numbered list of "
+            "concrete bugs with file:line and severity (CRIT / HIGH / MED / LOW). "
+            "If you cannot find any real bugs, say 'No bugs found.' exactly."
+        ),
+    )
+    display.console.print(resp.text or "(no bugs reported)")
+
+
+# ── plans ─────────────────────────────────────────────────────────────────────
+
+@main.command()
+def plans():
+    """Print the subscription plan catalog (same data as the /plans API)."""
+    from .repl_commands import _print_plans
+    _print_plans()
+
+
+# ── completion (shell completion script) ─────────────────────────────────────
+
+@main.command()
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion(shell):
+    """Print the shell-completion script for SHELL.
+
+    Install it like Claude Code / Aider:
+        eval "$(redtonomous completion bash)"
+    or pipe to a file in your completion dir.
+    """
+    # Click ships completion via an env var trick — we just print the eval
+    # form for each shell.
+    snippets = {
+        "bash": 'eval "$(_REDTONOMOUS_COMPLETE=bash_source redtonomous)"',
+        "zsh":  'eval "$(_REDTONOMOUS_COMPLETE=zsh_source redtonomous)"',
+        "fish": '_REDTONOMOUS_COMPLETE=fish_source redtonomous | source',
+    }
+    display.console.print(snippets[shell])
 
 
 if __name__ == "__main__":

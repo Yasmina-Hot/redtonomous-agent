@@ -136,7 +136,25 @@ redtonomous red <task>         # dangerous: bypass gate; requires
                                # REDTONOMOUS_I_KNOW_WHAT_IM_DOING=1
 redtonomous goal "<criteria>"  # judge-evaluated loop, retries until achieved
 
-redtonomous undo                       # restore the most recent backup directory
+# Skills & meta
+redtonomous chat               # plain back-and-forth (no tools, no loop)
+redtonomous init               # write a REDTONOMOUS.md memory file
+redtonomous review             # send the current git diff for code review
+redtonomous bug                # find bugs in the current git diff
+redtonomous plans              # show the pricing catalog
+redtonomous completion bash    # shell completion script
+redtonomous undo               # restore the most recent backup directory
+
+# More flags on `run` (Cursor / Aider / Claude Code-inspired)
+  --repo-map                   # inject an Aider-style repo map
+  --with-url <url>             # fetch URL(s), inject as context (repeatable)
+  --image <path>               # attach screenshot(s) to first message
+  --architect <p[:m]>          # different model plans, editor model executes
+  --test "<cmd>"               # auto-test gate: rerun until tests pass
+  --style concise|verbose|json # response style
+  --sandbox readonly|workdir|full
+  --worktree                   # run inside a fresh git worktree
+  --notify                     # desktop notification on done
 
 redtonomous config set-key <provider> <key>
 redtonomous config set-model <model>
@@ -203,6 +221,58 @@ redtonomous-agent/
 ```
 
 The three CLIs share the same config file (`~/.redtonomous/config.json`), tool set, and agent behavior. The web backend imports directly from the Python implementation.
+
+---
+
+## Plans & Pricing
+
+Local CLI usage with your own API keys is always free. The cloud relay tier and hosted UI offer optional managed plans:
+
+| Plan    | Price | What's in it |
+|---------|-------|--------------|
+| free    | $0    | BYO keys, 50 cloud sessions/mo, all 3 CLIs, local web UI |
+| min     | $4    | 100 cloud sessions, priority queue, email support |
+| starter | $9    | 250 cloud sessions, hosted Chat UI, sync sessions across devices |
+| pro     | $19   | Unlimited sessions, moonlight mode, prompt caching included |
+| dev     | $39   | Team workspaces, audit logs (90d), custom MCP, Slack/Discord notifications |
+| max     | $99   | Dedicated compute, priority routing, early-access features |
+| red     | $499  | `/red` mode unlimited, self-host option, 24/7 SLA |
+
+`redtonomous plans` prints the catalog from the CLI. `GET /plans` exposes it over the FastAPI backend. The chat UI has a $ icon in the header that opens the pricing page.
+
+---
+
+## REPL slash commands
+
+Type `redtonomous` with no subcommand to enter the REPL. Inside:
+
+| Command | What it does |
+|---------|--------------|
+| `/help`         | List all commands (including custom ones) |
+| `/clear`        | Clear the screen |
+| `/compact`      | (REPL state is already fresh each turn — informational) |
+| `/resume <id>`  | Resume a previous session |
+| `/init`         | Generate a `REDTONOMOUS.md` memory file |
+| `/model <id>`   | Switch the active model |
+| `/provider <p>` | Switch the active provider |
+| `/dir <path>`   | Change the working directory |
+| `/cost`         | Print pricing for the active model |
+| `/plans`        | Print the subscription catalog |
+| `/exit`         | Quit |
+
+Custom slash commands: drop a markdown file at `~/.redtonomous/commands/<name>.md` and it becomes `/<name>`. The body is expanded as the next task. Use `{args}` inside the template for trailing arguments.
+
+---
+
+## Project memory + conventions (inspired by Aider / Cursor / Claude Code)
+
+If any of these files exist in your `cwd`, they're auto-included:
+
+- `REDTONOMOUS.md` / `CLAUDE.md` / `AGENTS.md` — project memory (prepended to system prompt)
+- `.redtonomousrules` / `.cursorrules` / `.aiderrules` — conventions
+- `@path/to/file` or `@dir/` inside a task — Cursor-style inline file references that get inlined as context
+
+`redtonomous run --repo-map "<task>"` adds an Aider-style repo map (file tree + first lines of important files) to the system prompt.
 
 ---
 

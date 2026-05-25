@@ -19,6 +19,7 @@ from .routers.models_router import router as models_router
 from .routers.logs_router import router as logs_router
 from .routers.rdx_router import router as rdx_router
 from .routers.files_router import router as files_router
+from .routers.plans_router import router as plans_router
 
 logging.basicConfig(
     level=os.environ.get("REDTONOMOUS_LOG_LEVEL", "INFO"),
@@ -60,6 +61,7 @@ app.include_router(models_router)
 app.include_router(logs_router)
 app.include_router(rdx_router)
 app.include_router(files_router)
+app.include_router(plans_router)
 
 
 @app.get("/health")
