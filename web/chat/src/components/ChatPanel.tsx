@@ -3,7 +3,7 @@ import { useRef, useEffect, useState, KeyboardEvent } from "react";
 import { Send, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StreamingMessage } from "./StreamingMessage";
-import { createAgentWebSocket } from "@/lib/api";
+import { createAgentWebSocket, type AgentSocket } from "@/lib/api";
 import type { ChatMessage, StreamEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -50,7 +50,7 @@ export function ChatPanel({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isRunning, setIsRunning] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<AgentSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 

@@ -262,7 +262,7 @@ func moveFile(source, dest string) string {
 func searchFiles(pattern, directory, fileGlob string) string {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		re = regexp.MustCompile(regexp.QuoteMeta(pattern))
+		return fmt.Sprintf("ERROR: invalid regex %q: %v", pattern, err)
 	}
 	var results []string
 	_ = filepath.WalkDir(directory, func(p string, d fs.DirEntry, err error) error {
@@ -300,7 +300,46 @@ func searchFiles(pattern, directory, fileGlob string) string {
 	return strings.Join(results, "\n")
 }
 
+var dangerousPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\brm\s+-rf\s+/\S*`),
+	regexp.MustCompile(`\bmkfs(\.\w+)?\b`),
+	regexp.MustCompile(`\bdd\s+if=`),
+	regexp.MustCompile(`:\(\)\s*\{`),
+	regexp.MustCompile(`>\s*/dev/sd[a-z]`),
+	regexp.MustCompile(`\bchmod\s+(-R\s+)?0?777\b`),
+	regexp.MustCompile(`\bchown\s+(-R\s+)?root\b`),
+	regexp.MustCompile(`\bcurl\b[^|]*\|\s*(sudo\s+)?(ba)?sh`),
+	regexp.MustCompile(`\bwget\b[^|]*\|\s*(sudo\s+)?(ba)?sh`),
+}
+
+func isDangerous(command string) string {
+	for _, pat := range dangerousPatterns {
+		if pat.MatchString(command) {
+			return pat.String()
+		}
+	}
+	return ""
+}
+
 func executeCommand(command, cwd string, timeout int) string {
+	if strings.TrimSpace(command) == "" {
+		return "ERROR: command must be a non-empty string"
+	}
+	if timeout <= 0 {
+		timeout = 120
+	}
+	if timeout > 600 {
+		timeout = 600
+	}
+	if v := strings.ToLower(os.Getenv("REDTONOMOUS_CONFIRM_DANGEROUS")); v == "1" || v == "true" || v == "yes" {
+		if pat := isDangerous(command); pat != "" {
+			return fmt.Sprintf(
+				"ERROR: command matched a dangerous pattern (/%s/) and REDTONOMOUS_CONFIRM_DANGEROUS is enabled. "+
+					"Re-issue with a narrower scope or unset the env var to proceed.",
+				pat,
+			)
+		}
+	}
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
@@ -308,7 +347,7 @@ func executeCommand(command, cwd string, timeout int) string {
 	ctx.Dir = cwd
 	ctx.Env = append(os.Environ(), "TERM=dumb")
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	var stdout, stderr strings.Builder
 	ctx.Stdout = &stdout
 	ctx.Stderr = &stderr
@@ -318,14 +357,14 @@ func executeCommand(command, cwd string, timeout int) string {
 	}
 
 	go func() {
-		_ = ctx.Wait()
-		close(done)
+		done <- ctx.Wait()
 	}()
 
 	select {
 	case <-done:
 	case <-time.After(time.Duration(timeout) * time.Second):
 		_ = ctx.Process.Kill()
+		<-done // reap the goroutine so we don't leak
 		return fmt.Sprintf("ERROR: command timed out after %ds", timeout)
 	}
 

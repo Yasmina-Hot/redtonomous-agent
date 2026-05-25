@@ -8,7 +8,7 @@ import { SettingsPanel } from "@/components/SettingsPanel";
 import { SessionHistory } from "@/components/SessionHistory";
 import { TokenMeter } from "@/components/TokenMeter";
 import { CommandPalette } from "@/components/CommandPalette";
-import { Button } from "@/components/ui/button";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { LayoutMode, StreamEvent } from "@/lib/types";
 
 const LAYOUT_ICONS: Record<LayoutMode, React.ReactNode> = {
@@ -33,10 +33,17 @@ export default function ChatPage() {
   const [docContent, setDocContent] = useState("");
   const [canvasOpen, setCanvasOpen] = useState(true);
 
-  // Theme from data attribute
+  // Theme persisted to localStorage so reloads keep the user's choice.
   const [theme, setTheme] = useState("cyberpunk");
   useEffect(() => {
+    const saved = typeof window !== "undefined" ? window.localStorage.getItem("redtonomous.theme") : null;
+    if (saved) setTheme(saved);
+  }, []);
+  useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("redtonomous.theme", theme);
+    }
   }, [theme]);
 
   const handleCanvasUpdate = useCallback((event: StreamEvent) => {
@@ -95,6 +102,7 @@ export default function ChatPage() {
           onClick={cyclLayout}
           className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
           title="Cycle layout"
+          aria-label={`Cycle layout (current: ${LAYOUT_LABELS[layout]})`}
         >
           {LAYOUT_ICONS[layout]}
           <span className="hidden md:inline">{LAYOUT_LABELS[layout]}</span>
@@ -144,14 +152,16 @@ export default function ChatPage() {
             "flex-1 min-w-0" /* float */
           }
         >
-          <ChatPanel
-            provider={provider}
-            model={model}
-            cwd={cwd}
-            onTokenUpdate={handleTokenUpdate}
-            onRunningChange={setIsRunning}
-            onCanvasUpdate={handleCanvasUpdate}
-          />
+          <ErrorBoundary>
+            <ChatPanel
+              provider={provider}
+              model={model}
+              cwd={cwd}
+              onTokenUpdate={handleTokenUpdate}
+              onRunningChange={setIsRunning}
+              onCanvasUpdate={handleCanvasUpdate}
+            />
+          </ErrorBoundary>
         </div>
 
         {/* Canvas (split/dashboard/float only) */}
@@ -163,11 +173,13 @@ export default function ChatPage() {
               "w-[45%] shrink-0" /* float */
             }
           >
-            <Canvas
-              cwd={cwd}
-              lastWrittenFile={lastFile}
-              docContent={docContent}
-            />
+            <ErrorBoundary>
+              <Canvas
+                cwd={cwd}
+                lastWrittenFile={lastFile}
+                docContent={docContent}
+              />
+            </ErrorBoundary>
           </div>
         )}
       </main>

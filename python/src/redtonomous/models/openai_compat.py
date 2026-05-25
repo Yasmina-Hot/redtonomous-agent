@@ -32,7 +32,6 @@ class OpenAICompatAdapter(ModelAdapter):
 
         resp = self.client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
-        stop = resp.choices[0].finish_reason
 
         tool_calls = []
         if msg.tool_calls:

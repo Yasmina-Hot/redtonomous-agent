@@ -1,9 +1,13 @@
+import sys
+import os
 import uuid
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+
+from ..auth import require_token, require_ws_token
 from ..ws_manager import manager
 from ..agent_runner import run_agent_stream
-import sys, os
 
 _PYTHON_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "python", "src"))
 if _PYTHON_SRC not in sys.path:
@@ -22,7 +26,7 @@ class RunRequest(BaseModel):
     config_override: dict | None = None
 
 
-@router.post("/run")
+@router.post("/run", dependencies=[Depends(require_token)])
 async def start_run(req: RunRequest):
     run_id = str(uuid.uuid4())
     cfg = req.config_override or cfg_module.load_config()
@@ -40,7 +44,10 @@ async def agent_ws(
     model: str = "",
     cwd: str = ".",
     max_iterations: int = 100,
+    token: str = "",
 ):
+    if not await require_ws_token(ws, token):
+        return
     await manager.connect(run_id, ws)
     try:
         cfg = cfg_module.load_config()
@@ -55,4 +62,4 @@ async def agent_ws(
     except WebSocketDisconnect:
         pass
     finally:
-        manager.disconnect(run_id)
+        await manager.disconnect(run_id)

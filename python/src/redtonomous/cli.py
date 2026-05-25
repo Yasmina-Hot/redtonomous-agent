@@ -91,7 +91,9 @@ def main(ctx, model, provider, workdir):
 @click.option("--max-iter", default=100, show_default=True, help="Max tool-call iterations")
 @click.option("--log/--no-log", default=True, show_default=True, help="Save session log")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
-def run(task, model, provider, workdir, backup, max_iter, log, yes):
+@click.option("--resume", "resume_id", default=None,
+              help="Resume from a prior session log (use the id printed by 'redtonomous logs')")
+def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id):
     """Run TASK autonomously using the configured model."""
     display.print_banner()
 
@@ -110,6 +112,16 @@ def run(task, model, provider, workdir, backup, max_iter, log, yes):
         display.print_error(str(e))
         sys.exit(1)
 
+    resumed = None
+    if resume_id:
+        from .agent import load_resume
+        try:
+            resumed = load_resume(resume_id)
+            display.print_info(f"Resuming session {resume_id} ({len(resumed.get('log', []))} prior steps)")
+        except FileNotFoundError as e:
+            display.print_error(str(e))
+            sys.exit(1)
+
     from .agent import run as agent_run
     agent_run(
         task=task,
@@ -120,6 +132,7 @@ def run(task, model, provider, workdir, backup, max_iter, log, yes):
         max_iterations=max_iter,
         backup=backup,
         log=log,
+        resume=resumed,
     )
 
 

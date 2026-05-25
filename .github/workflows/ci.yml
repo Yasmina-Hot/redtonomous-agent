@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-cli:
+    name: Python CLI · pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        working-directory: python
+        run: ruff check src tests
+      - name: Test
+        working-directory: python
+        run: pytest -q
+
+  web-api:
+    name: Web API · pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./python
+          pip install -r web/api/requirements.txt
+          pip install pytest httpx
+      - name: Test
+        run: pytest -q web/api/tests
+
+  typescript-cli:
+    name: TypeScript CLI · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - name: Install
+        working-directory: typescript
+        run: npm install --no-audit --no-fund
+      - name: Build
+        working-directory: typescript
+        run: npx tsc --noEmit
+
+  go-cli:
+    name: Go CLI · tools tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Mod download
+        working-directory: go
+        run: go mod download
+      # The models/agent/cmd packages build against an alpha Anthropic SDK
+      # whose API has shifted; that is tracked separately. CI verifies the
+      # ./tools/ package (filesystem + shell helpers) which is what the new
+      # tests cover.
+      - name: Vet (tools)
+        working-directory: go
+        run: go vet ./tools/...
+      - name: Test (tools)
+        working-directory: go
+        run: go test ./tools/...
+
+  web-chat-build:
+    name: Web Chat · next build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/chat/package-lock.json
+      - name: Install
+        working-directory: web/chat
+        run: npm ci --legacy-peer-deps
+      - name: Build
+        working-directory: web/chat
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+        run: npm run build
+
+  web-rdx-build:
+    name: Web RDX · next build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/rdx/package-lock.json
+      - name: Install
+        working-directory: web/rdx
+        run: npm ci --legacy-peer-deps
+      - name: Build
+        working-directory: web/rdx
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+        run: npm run build

@@ -118,6 +118,7 @@ redtonomous run <task>
   --max-iter N      Max tool-call iterations (default: 100)
   --no-log          Skip session log
   -y, --yes         Skip confirmation prompt
+  --resume ID       Resume a previous session by id (see ~/.redtonomous/logs/)
 
 redtonomous config set-key <provider> <key>
 redtonomous config set-model <model>
@@ -184,6 +185,33 @@ redtonomous-agent/
 ```
 
 The three CLIs share the same config file (`~/.redtonomous/config.json`), tool set, and agent behavior. The web backend imports directly from the Python implementation.
+
+---
+
+## Security & Environment Variables
+
+The FastAPI backend reads these at startup:
+
+| Variable | Effect |
+|---|---|
+| `REDTONOMOUS_API_TOKEN` | When set, every endpoint except `/health` requires `Authorization: Bearer <token>` (or `?token=` for WebSockets). Unset = open dev mode (logs a warning). |
+| `REDTONOMOUS_FILES_ROOT` | Sandbox root for `/files` and `/file`. Defaults to the process working directory. Path traversal is rejected. |
+| `REDTONOMOUS_CORS_ORIGINS` | Comma-separated extra origins to allow (the four `localhost:300x` ones are always allowed). |
+| `REDTONOMOUS_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING`. Default `INFO`. |
+
+The CLI shell tool honors:
+
+| Variable | Effect |
+|---|---|
+| `REDTONOMOUS_CONFIRM_DANGEROUS` | When `1`/`true`/`yes`, commands matching destructive patterns (`rm -rf /`, `mkfs`, `curl | sh`, …) are refused so the model has to re-issue with narrower scope. |
+| `REDTONOMOUS_CLAUDE_PROMPT_CACHE` | Default `1`. Set to `0` to disable ephemeral prompt caching on the Claude adapter. |
+
+The Next.js apps read:
+
+| Variable | Effect |
+|---|---|
+| `NEXT_PUBLIC_API_URL` | Backend URL (default `http://localhost:8000`). |
+| `NEXT_PUBLIC_API_TOKEN` | Bearer token sent with every fetch + WS query. Required when the backend has `REDTONOMOUS_API_TOKEN` set. |
 
 ---
 

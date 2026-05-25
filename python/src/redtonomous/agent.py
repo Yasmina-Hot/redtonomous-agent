@@ -2,9 +2,10 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from . import display
-from .models.base import ModelAdapter, ToolCall
+from .models.base import ModelAdapter
 from .tools.definitions import TOOLS
 from .tools.executor import execute_tool
 
@@ -27,6 +28,49 @@ Provider: {provider} | Model: {model}
 """
 
 
+def _ts() -> str:
+    """ISO-8601 basic timestamp (no separators) — matches the TS + Go ports."""
+    return datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+
+def load_resume(session_id: str) -> dict[str, Any]:
+    """Load a persisted session log for ``--resume``.
+
+    Returns the raw dict (``task``, ``provider``, ``model``, ``cwd``, ``log``).
+    Raises FileNotFoundError if the session is missing.
+    """
+    from . import config as cfg_module
+    logs_dir = cfg_module.ensure_logs_dir()
+    candidate = logs_dir / (session_id if session_id.endswith(".json") else f"{session_id}.json")
+    if not candidate.exists():
+        # Try the unprefixed form (the on-disk files are named "session_<ts>.json")
+        candidate = logs_dir / f"session_{session_id}.json"
+    if not candidate.exists():
+        raise FileNotFoundError(f"No session log matching {session_id!r}")
+    with open(candidate) as f:
+        return json.load(f)
+
+
+def _hydrate_messages(task: str, resumed: dict[str, Any] | None) -> list[dict]:
+    messages: list[dict] = [{"role": "user", "content": task}]
+    if not resumed:
+        return messages
+    # Replay tool calls/results as plain text so any provider can continue.
+    prior = "\n".join(
+        f"[iter {step['iter']}] {step['tool']}({json.dumps(step.get('args', {}))}) "
+        f"→ {'error' if step.get('error') else 'ok'}: {step.get('result', '')[:200]}"
+        for step in resumed.get("log", [])[-20:]
+    )
+    if prior:
+        messages.insert(0, {
+            "role": "user",
+            "content": (
+                "Resuming a previous session. Here are the last actions taken:\n\n"
+                f"{prior}\n\nContinue from where you left off."
+            ),
+        })
+    return messages
+
 
 def run(
     task: str,
@@ -37,9 +81,10 @@ def run(
     max_iterations: int = 100,
     backup: bool = True,
     log: bool = True,
+    resume: dict[str, Any] | None = None,
 ) -> None:
     if backup:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = _ts()
         dst = f"{cwd.rstrip('/')}_backup_{ts}"
         try:
             shutil.copytree(cwd, dst, dirs_exist_ok=False)
@@ -48,12 +93,14 @@ def run(
             display.print_info(f"Backup skipped: {e}")
 
     system = SYSTEM_PROMPT.format(cwd=cwd, provider=provider, model=model)
-    messages: list[dict] = [{"role": "user", "content": task}]
-    session_log: list[dict] = []
+    messages = _hydrate_messages(task, resume)
+    session_log: list[dict] = list(resume.get("log", [])) if resume else []
     total_in = total_out = 0
 
     display.console.rule("[bold red]Redtonomous[/bold red]")
     display.print_info(f"Task: {task}")
+    if resume:
+        display.print_info(f"Resumed from session ({len(session_log)} prior steps)")
     display.print_info(f"Model: {provider}/{model}  |  Dir: {cwd}  |  Max iterations: {max_iterations}")
     display.console.rule()
 
@@ -98,8 +145,7 @@ def run(
     if log and session_log:
         from . import config as cfg_module
         logs_dir = cfg_module.ensure_logs_dir()
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = logs_dir / f"session_{ts}.json"
+        log_file = Path(logs_dir) / f"session_{_ts()}.json"
         with open(log_file, "w") as f:
             json.dump({"task": task, "provider": provider, "model": model, "cwd": cwd, "log": session_log}, f, indent=2)
         display.print_info(f"Session log: {log_file}")

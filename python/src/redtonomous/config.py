@@ -48,6 +48,38 @@ def save(cfg: dict[str, Any]) -> None:
         json.dump(cfg, f, indent=2)
 
 
+# Long-form aliases used by web/api routers.
+load_config = load
+save_config = save
+
+
+_SENSITIVE_KEYS = {"api_key", "token", "secret", "password", "authorization"}
+_SENSITIVE_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password")
+
+
+def _is_sensitive_key(key: str) -> bool:
+    kl = key.lower()
+    return kl in _SENSITIVE_KEYS or kl.endswith(_SENSITIVE_KEY_SUFFIXES)
+
+
+def redact_sensitive(obj: Any) -> Any:
+    """Return a deep copy of obj with values for sensitive-looking keys masked.
+
+    Used by request loggers so secrets never hit the on-disk session log.
+    """
+    if isinstance(obj, dict):
+        out: dict = {}
+        for k, v in obj.items():
+            if _is_sensitive_key(str(k)):
+                out[k] = "***" if v not in (None, "", "none") else v
+            else:
+                out[k] = redact_sensitive(v)
+        return out
+    if isinstance(obj, list):
+        return [redact_sensitive(x) for x in obj]
+    return obj
+
+
 def ensure_logs_dir() -> Path:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     return LOGS_DIR

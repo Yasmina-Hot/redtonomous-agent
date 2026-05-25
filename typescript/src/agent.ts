@@ -46,7 +46,7 @@ export async function runAgent(opts: {
   const maxIterations = opts.maxIterations ?? 100;
 
   if (opts.backup !== false) {
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
     const dst = `${cwd}_backup_${ts}`;
     try {
       copyDir(cwd, dst);
@@ -73,6 +73,7 @@ export async function runAgent(opts: {
   display.printInfo(`Model: ${provider}/${model}  |  Dir: ${cwd}  |  Max iterations: ${maxIterations}`);
   display.printRule();
 
+  let completed = false;
   for (let iter = 0; iter < maxIterations; iter++) {
     const resp = await adapter.chat(messages, TOOLS, system);
     totalIn += resp.inputTokens;
@@ -82,6 +83,7 @@ export async function runAgent(opts: {
 
     if (resp.stopReason === "end_turn" || resp.toolCalls.length === 0) {
       display.printFinal(resp.text || "(Task complete)");
+      completed = true;
       break;
     }
 
@@ -96,17 +98,16 @@ export async function runAgent(opts: {
 
     const newMsgs = adapter.buildToolResultMessages(resp.toolCalls, results);
     messages.push(...newMsgs);
-
-    if (iter === maxIterations - 1) {
-      display.printError(`Reached max iterations (${maxIterations}). Task may be incomplete.`);
-    }
+  }
+  if (!completed) {
+    display.printError(`Reached max iterations (${maxIterations}). Task may be incomplete.`);
   }
 
   display.printInfo(`Tokens used — input: ${totalIn}  output: ${totalOut}`);
 
   if (opts.log !== false && sessionLog.length > 0) {
     const logsDir = ensureLogsDir();
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
     const logFile = path.join(logsDir, `session_${ts}.json`);
     fs.writeFileSync(logFile, JSON.stringify({ task, provider, model, cwd, log: sessionLog }, null, 2));
     display.printInfo(`Session log: ${logFile}`);

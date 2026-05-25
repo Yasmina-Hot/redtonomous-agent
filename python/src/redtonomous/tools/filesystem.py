@@ -89,8 +89,8 @@ def search_files(pattern: str, directory: str, file_glob: str = "*") -> str:
         return f"ERROR: {directory} does not exist"
     try:
         regex = re.compile(pattern)
-    except re.error:
-        regex = re.compile(re.escape(pattern))
+    except re.error as e:
+        return f"ERROR: invalid regex {pattern!r}: {e}"
 
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if not d.startswith(".")]

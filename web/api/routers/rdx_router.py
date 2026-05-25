@@ -1,20 +1,23 @@
 """RDX Red Testing endpoints."""
+import sys
+import os
 import uuid
 import json
-import os
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
 from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+
+from ..auth import require_token, require_ws_token
 from ..ws_manager import ConnectionManager
 from ..agent_runner import run_agent_stream
-import sys
 
 _PYTHON_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "python", "src"))
 if _PYTHON_SRC not in sys.path:
     sys.path.insert(0, _PYTHON_SRC)
 from redtonomous import config as cfg_module
 
-router = APIRouter(prefix="/rdx", tags=["rdx"])
+router = APIRouter(prefix="/rdx", tags=["rdx"], dependencies=[Depends(require_token)])
 rdx_manager = ConnectionManager()
 
 RDX_STORE_PATH = os.path.expanduser("~/.redtonomous/rdx_tests.json")
@@ -79,7 +82,6 @@ async def update_test(test_id: str, test: TestCase):
             tests[i] = {"id": test_id, **test.model_dump()}
             _save_tests(tests)
             return tests[i]
-    from fastapi import HTTPException
     raise HTTPException(404, "Test not found")
 
 
@@ -97,6 +99,7 @@ async def start_rdx_run(req: RunTestRequest):
     return {"run_id": run_id}
 
 
+# WebSocket bypasses the router-level HTTP dependency; token check happens inline.
 @router.websocket("/ws/{run_id}")
 async def rdx_run_ws(
     ws: WebSocket,
@@ -104,7 +107,10 @@ async def rdx_run_ws(
     test_ids: str = "",
     providers: str = "",
     cwd: str = ".",
+    token: str = "",
 ):
+    if not await require_ws_token(ws, token):
+        return
     await rdx_manager.connect(run_id, ws)
     try:
         cfg = cfg_module.load_config()
@@ -123,7 +129,7 @@ async def rdx_run_ws(
                     "provider": provider,
                     "model": model,
                 })
-                full_output = []
+                full_output: list[str] = []
                 async for event in run_agent_stream(
                     task=test["prompt"], provider=provider, model=model,
                     cwd=cwd, config_dict=cfg, max_iterations=50,
@@ -143,4 +149,4 @@ async def rdx_run_ws(
     except WebSocketDisconnect:
         pass
     finally:
-        rdx_manager.disconnect(run_id)
+        await rdx_manager.disconnect(run_id)

@@ -6,7 +6,8 @@ import { RaceView } from "./RaceView";
 import type { TestRun } from "@/lib/types";
 
 const ALL_PROVIDERS = ["claude", "openai", "gemini", "groq", "deepseek"];
-const API = "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const TOKEN = process.env.NEXT_PUBLIC_API_TOKEN ?? "";
 
 interface RunsTabProps {
   selectedTestIds: string[];
@@ -44,16 +45,22 @@ export function RunsTab({ selectedTestIds, testMap }: RunsTabProps) {
     );
     setRuns(initial);
 
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (TOKEN) headers["Authorization"] = `Bearer ${TOKEN}`;
     const res = await fetch(`${API}/rdx/run`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ test_ids: selectedTestIds }),
+      headers,
+      body: JSON.stringify({
+        test_ids: selectedTestIds,
+        providers: selectedProviders,
+      }),
     });
     const { run_id } = await res.json();
 
-    const wsUrl = new URL(`${API.replace("http", "ws")}/rdx/ws/${run_id}`);
+    const wsUrl = new URL(`${API.replace(/^http/, "ws")}/rdx/ws/${run_id}`);
     wsUrl.searchParams.set("test_ids", selectedTestIds.join(","));
     wsUrl.searchParams.set("providers", selectedProviders.join(","));
+    if (TOKEN) wsUrl.searchParams.set("token", TOKEN);
 
     const ws = new WebSocket(wsUrl.toString());
     wsRef.current = ws;
@@ -70,7 +77,6 @@ export function RunsTab({ selectedTestIds, testMap }: RunsTabProps) {
           )
         );
       } else if (event.type === "test_done") {
-        const endTime = Date.now();
         setRuns((prev) =>
           prev.map((r) =>
             r.testId === event.test_id && r.provider === event.provider
