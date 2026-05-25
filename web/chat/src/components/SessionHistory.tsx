@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { History, X, ChevronRight, Clock } from "lucide-react";
+import { History, X, Clock, Share2, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { fetchLogs, fetchLog } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
@@ -11,6 +11,8 @@ export function SessionHistory() {
   const [open, setOpen] = useState(false);
   const [logs, setLogs] = useState<SessionLog[]>([]);
   const [selected, setSelected] = useState<SessionLogDetail | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [shared, setShared] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -18,9 +20,36 @@ export function SessionHistory() {
     }
   }, [open]);
 
+  // ?session=<id> in the URL pre-opens the panel + detail view.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const id = new URLSearchParams(window.location.search).get("session");
+    if (id) {
+      setOpen(true);
+      fetchLog(id).then((d) => {
+        setSelected(d);
+        setSelectedId(id);
+      }).catch(() => undefined);
+    }
+  }, []);
+
   const openLog = async (log: SessionLog) => {
     const detail = await fetchLog(log.id).catch(() => null);
     setSelected(detail);
+    setSelectedId(log.id);
+  };
+
+  const share = async () => {
+    if (!selectedId || typeof window === "undefined") return;
+    const url = `${window.location.origin}${window.location.pathname}?session=${encodeURIComponent(selectedId)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setShared(selectedId);
+      setTimeout(() => setShared(null), 2000);
+    } catch {
+      // Clipboard unavailable (insecure context) — fall back to a prompt.
+      window.prompt("Copy this URL:", url);
+    }
   };
 
   return (
@@ -67,6 +96,18 @@ export function SessionHistory() {
             <div className="flex-1 overflow-y-auto p-3">
               {selected ? (
                 <div className="space-y-3">
+                  <div className="flex items-center justify-end">
+                    <button
+                      onClick={share}
+                      className="flex items-center gap-1.5 text-[10px] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                      title="Copy a sharable URL to the clipboard"
+                      aria-label="Copy sharable URL"
+                    >
+                      {shared && shared === selectedId
+                        ? <><Check size={11} /> Copied</>
+                        : <><Share2 size={11} /> Share URL</>}
+                    </button>
+                  </div>
                   <div className="rounded border border-[var(--border)] bg-[var(--surface-2)] p-2.5 text-xs space-y-1">
                     <p><span className="text-[var(--text-muted)]">Task:</span> <span className="text-[var(--text)]">{selected.task}</span></p>
                     <p><span className="text-[var(--text-muted)]">Model:</span> <span className="font-mono">{selected.provider}/{selected.model}</span></p>

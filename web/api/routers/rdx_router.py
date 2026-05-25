@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..auth import require_token, require_ws_token
 from ..ws_manager import ConnectionManager
@@ -47,6 +47,11 @@ class TestCase(BaseModel):
 
 
 class RunTestRequest(BaseModel):
+    # ``model_overrides`` conflicts with pydantic's ``model_`` protected
+    # namespace; opt out explicitly so we don't get a UserWarning every time
+    # this module loads.
+    model_config = ConfigDict(protected_namespaces=())
+
     test_ids: list[str]
     providers: list[str]
     model_overrides: dict[str, str] = {}
@@ -117,7 +122,16 @@ async def rdx_run_ws(
         test_id_list = test_ids.split(",") if test_ids else []
         provider_list = providers.split(",") if providers else [cfg.get("default_provider", "claude")]
         all_tests = _load_tests()
-        selected = [t for t in all_tests if t["id"] in test_id_list] if test_id_list else all_tests[:5]
+        if test_id_list:
+            selected = [t for t in all_tests if t["id"] in test_id_list]
+        else:
+            # Explicit "no ids" used to silently run the first 5 tests, which
+            # could spend tokens without consent. Require an explicit list.
+            await rdx_manager.send(run_id, {
+                "type": "error",
+                "message": "No test_ids provided. Pass ?test_ids=a,b,c.",
+            })
+            return
 
         for test in selected:
             for provider in provider_list:

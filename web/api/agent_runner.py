@@ -62,7 +62,9 @@ async def run_agent_stream(
         try:
             adapter = get_adapter(provider, model, config_dict)
         except Exception as e:
-            emit({"type": "error", "message": f"Could not load adapter: {e}"})
+            msg = f"Could not load adapter: {e}"
+            hint = f"redtonomous config set-key {provider} <key>"
+            emit({"type": "error", "message": f"{msg}\nHint: run `{hint}`"})
             emit(_SENTINEL)
             return
 

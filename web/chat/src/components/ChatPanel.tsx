@@ -43,6 +43,30 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
   );
 }
 
+const MESSAGES_LS_KEY = "redtonomous.chat.messages.v1";
+
+function loadMessages(): ChatMessage[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(MESSAGES_LS_KEY);
+    return raw ? (JSON.parse(raw) as ChatMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveMessages(messages: ChatMessage[]) {
+  if (typeof window === "undefined") return;
+  try {
+    // Drop streaming-in-progress messages so we don't replay half-finished
+    // assistant turns after a reload.
+    const stable = messages.filter((m) => m.status !== "streaming");
+    window.localStorage.setItem(MESSAGES_LS_KEY, JSON.stringify(stable.slice(-200)));
+  } catch {
+    /* quota or serialization errors are non-fatal */
+  }
+}
+
 export function ChatPanel({
   provider, model, cwd,
   onTokenUpdate, onRunningChange, onCanvasUpdate,
@@ -53,6 +77,17 @@ export function ChatPanel({
   const wsRef = useRef<AgentSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Restore chat history on mount.
+  useEffect(() => {
+    const restored = loadMessages();
+    if (restored.length > 0) setMessages(restored);
+  }, []);
+
+  // Persist on every change (debounced via the effect's batching).
+  useEffect(() => {
+    saveMessages(messages);
+  }, [messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

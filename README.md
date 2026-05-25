@@ -111,14 +111,32 @@ redtonomous run "do the thing" --provider my_api --model my-model
 
 ```
 redtonomous run <task>
-  -m, --model       Model ID (e.g. claude-opus-4-7)
-  -p, --provider    Provider (claude, openai, gemini, groq, ollama, ...)
-  -d, --dir         Working directory (default: current dir)
-  --no-backup       Skip automatic backup
-  --max-iter N      Max tool-call iterations (default: 100)
-  --no-log          Skip session log
-  -y, --yes         Skip confirmation prompt
-  --resume ID       Resume a previous session by id (see ~/.redtonomous/logs/)
+  -m, --model         Model ID (e.g. claude-opus-4-7)
+  -p, --provider      Provider (claude, openai, gemini, groq, ollama, ...)
+  -d, --dir           Working directory (default: current dir)
+  --no-backup         Skip automatic backup
+  --max-iter N        Max tool-call iterations (default: 100)
+  --no-log            Skip session log
+  -y, --yes           Skip confirmation prompt
+  --resume ID         Resume a previous session by id (see ~/.redtonomous/logs/)
+  --budget USD        Halt when accumulated cost exceeds USD (0 = no cap)
+  --max-hours N       Wall-clock cap, refuses to run past this many hours
+  --dry-run           Stub out write_file / execute_command / etc. — no side effects
+  --plan-first        Ask the model for a numbered plan and confirm before running
+  --diff              After the run, git-diff every file the agent touched
+  --git-commit "msg"  On success, git add -A && git commit -m "msg" in cwd
+  --git-branch "name" Create + check out this branch before the run
+  --tools a,b         Allow-list of tool names available to the model
+  --no-tools x,y      Deny-list of tool names
+  --fallback p,q      Provider failover chain on rate-limit / 5xx
+
+# Autonomy modes — wrappers around `run` with opinionated defaults
+redtonomous moonlight <task>   # overnight: 8h cap, $50 budget, retry, checkpoints
+redtonomous red <task>         # dangerous: bypass gate; requires
+                               # REDTONOMOUS_I_KNOW_WHAT_IM_DOING=1
+redtonomous goal "<criteria>"  # judge-evaluated loop, retries until achieved
+
+redtonomous undo                       # restore the most recent backup directory
 
 redtonomous config set-key <provider> <key>
 redtonomous config set-model <model>

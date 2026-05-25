@@ -23,13 +23,9 @@ Working directory: {cwd}
 Provider: {provider} | Model: {model}`;
 
 function copyDir(src: string, dest: string): void {
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDir(srcPath, destPath);
-    else fs.copyFileSync(srcPath, destPath);
-  }
+  // Use fs.cpSync so symlinks aren't followed (avoids infinite recursion on
+  // self-referential links) and ownership/timestamps survive.
+  fs.cpSync(src, dest, { recursive: true, dereference: false });
 }
 
 export async function runAgent(opts: {

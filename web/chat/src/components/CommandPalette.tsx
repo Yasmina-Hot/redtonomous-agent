@@ -41,6 +41,7 @@ export function CommandPalette({ onSwitchModel, onOpenSettings, onOpenHistory, o
     { id: "theme-professional", label: "Theme: Professional Dark",   icon: <Palette size={13} />, run: () => onSwitchTheme("professional") },
     { id: "theme-bold",         label: "Theme: Bold Red + Black",    icon: <Palette size={13} />, run: () => onSwitchTheme("bold") },
     { id: "theme-warm",         label: "Theme: Warm Dark",           icon: <Palette size={13} />, run: () => onSwitchTheme("warm") },
+    { id: "theme-light",        label: "Theme: Light",               icon: <Palette size={13} />, run: () => onSwitchTheme("light") },
   ];
 
   const filtered = ACTIONS.filter((a) => a.label.toLowerCase().includes(query.toLowerCase()));

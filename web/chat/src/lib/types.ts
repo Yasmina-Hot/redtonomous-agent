@@ -1,4 +1,4 @@
-export type Theme = "cyberpunk" | "professional" | "bold" | "warm";
+export type Theme = "cyberpunk" | "professional" | "bold" | "warm" | "light";
 export type LayoutMode = "split" | "terminal" | "dashboard" | "float";
 export type CanvasTab = "code" | "doc" | "files" | "diagram";
 

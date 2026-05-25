@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 import click
 from rich.prompt import Confirm
@@ -82,6 +83,62 @@ def main(ctx, model, provider, workdir):
 
 # ── run ───────────────────────────────────────────────────────────────────────
 
+def _build_adapter(provider, model, cfg, fallback: str | None = None):
+    """Construct an adapter, optionally wrapped in a ProviderChain."""
+    primary = get_adapter(provider, model, cfg)
+    if not fallback:
+        return primary
+    fallbacks = []
+    for spec in [s.strip() for s in fallback.split(",") if s.strip()]:
+        if ":" in spec:
+            fp, fm = spec.split(":", 1)
+        else:
+            fp = spec
+            fm = cfg_module.get_default_model_for_provider(fp)
+        try:
+            fallbacks.append(get_adapter(fp, fm, cfg))
+        except ValueError as e:
+            display.print_info(f"Fallback {fp}/{fm} skipped: {e}")
+    if not fallbacks:
+        return primary
+    from .provider_chain import ProviderChain
+    return ProviderChain(primary=primary, fallbacks=fallbacks)
+
+
+def _split_csv(s: str | None) -> list[str] | None:
+    if not s:
+        return None
+    return [x.strip() for x in s.split(",") if x.strip()]
+
+
+# Extra options shared by ``run`` and the mode subcommands.
+def _common_options(f):
+    for decorator in reversed([
+        click.option("--budget", "budget_usd", type=float, default=0.0,
+                     help="Stop when accumulated cost reaches USD amount (0 = no cap)"),
+        click.option("--max-hours", type=float, default=0.0,
+                     help="Stop after this many wall-clock hours (0 = no cap)"),
+        click.option("--dry-run", is_flag=True, default=False,
+                     help="Stub destructive tools — no writes or shell execution"),
+        click.option("--plan-first", is_flag=True, default=False,
+                     help="Ask the model for a numbered plan and confirm before running"),
+        click.option("--diff", "show_diff", is_flag=True, default=False,
+                     help="After the run, git-diff files the agent touched"),
+        click.option("--git-commit", "git_commit_msg", default=None,
+                     help="If the run completes, run 'git commit -m <msg>' in cwd"),
+        click.option("--git-branch", default=None,
+                     help="Create + check out this branch in cwd before the run"),
+        click.option("--tools", "tools_allow", default=None,
+                     help="Comma-separated allow-list of tool names"),
+        click.option("--no-tools", "tools_deny", default=None,
+                     help="Comma-separated deny-list of tool names"),
+        click.option("--fallback", default=None,
+                     help="Comma list of provider[:model] failovers, e.g. openai:gpt-4o,gemini"),
+    ]):
+        f = decorator(f)
+    return f
+
+
 @main.command()
 @click.argument("task")
 @click.option("--model", "-m", default=None, help="Model ID override")
@@ -92,13 +149,15 @@ def main(ctx, model, provider, workdir):
 @click.option("--log/--no-log", default=True, show_default=True, help="Save session log")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.option("--resume", "resume_id", default=None,
-              help="Resume from a prior session log (use the id printed by 'redtonomous logs')")
-def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id):
+              help="Resume from a prior session log")
+@_common_options
+def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id,
+        budget_usd, max_hours, dry_run, plan_first, show_diff, git_commit_msg,
+        git_branch, tools_allow, tools_deny, fallback):
     """Run TASK autonomously using the configured model."""
     display.print_banner()
 
     cfg, provider, model, cwd = _resolve_run_params(model, provider, workdir)
-
     display.warn_autonomous(cwd, provider, model)
 
     if not yes:
@@ -107,7 +166,7 @@ def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id):
             sys.exit(0)
 
     try:
-        adapter = get_adapter(provider, model, cfg)
+        adapter = _build_adapter(provider, model, cfg, fallback=fallback)
     except ValueError as e:
         display.print_error(str(e))
         sys.exit(1)
@@ -123,17 +182,260 @@ def run(task, model, provider, workdir, backup, max_iter, log, yes, resume_id):
             sys.exit(1)
 
     from .agent import run as agent_run
-    agent_run(
-        task=task,
-        adapter=adapter,
-        provider=provider,
-        model=model,
-        cwd=cwd,
-        max_iterations=max_iter,
-        backup=backup,
-        log=log,
-        resume=resumed,
+    result = agent_run(
+        task=task, adapter=adapter, provider=provider, model=model, cwd=cwd,
+        max_iterations=max_iter, backup=backup, log=log, resume=resumed,
+        yes=yes, budget_usd=budget_usd, max_hours=max_hours, dry_run=dry_run,
+        plan_first=plan_first, diff=show_diff, git_commit_msg=git_commit_msg,
+        git_branch=git_branch,
+        tools_allow=_split_csv(tools_allow), tools_deny=_split_csv(tools_deny),
     )
+    sys.exit(result.exit_code)
+
+
+# ── moonlight ─────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.argument("task")
+@click.option("--model", "-m", default=None)
+@click.option("--provider", "-p", default=None)
+@click.option("--dir", "-d", "workdir", default=None)
+@click.option("--max-iter", default=1000, show_default=True)
+@click.option("--max-hours", type=float, default=8.0, show_default=True,
+              help="Hard wall-clock cap. The run will halt cleanly when reached.")
+@click.option("--budget", "budget_usd", type=float, default=50.0, show_default=True,
+              help="Stop when accumulated cost reaches USD amount")
+@click.option("--checkpoint-every", default=30, show_default=True,
+              help="Persist checkpoint every N iterations")
+@click.option("--heartbeat-min", "heartbeat_min", default=5.0, show_default=True,
+              help="Heartbeat status line every N minutes")
+@click.option("--fallback", default=None,
+              help="Comma list of provider[:model] failovers for rate-limit drops")
+@click.option("--resume", "resume_id", default=None)
+def moonlight(task, model, provider, workdir, max_iter, max_hours, budget_usd,
+              checkpoint_every, heartbeat_min, fallback, resume_id):
+    """Overnight long-run mode: heartbeat, checkpoints, auto-retry, hard cap."""
+    display.print_banner()
+    cfg, provider, model, cwd = _resolve_run_params(model, provider, workdir)
+
+    display.print_info(
+        f"[moonlight] iter≤{max_iter} cap={max_hours}h budget=${budget_usd:.2f} "
+        f"checkpoint every {checkpoint_every} iter"
+    )
+
+    try:
+        adapter = _build_adapter(provider, model, cfg, fallback=fallback)
+    except ValueError as e:
+        display.print_error(str(e))
+        sys.exit(1)
+
+    resumed = None
+    if resume_id:
+        from .agent import load_resume
+        try:
+            resumed = load_resume(resume_id)
+        except FileNotFoundError as e:
+            display.print_error(str(e))
+            sys.exit(1)
+
+    from .agent import run as agent_run
+    result = agent_run(
+        task=task, adapter=adapter, provider=provider, model=model, cwd=cwd,
+        max_iterations=max_iter, backup=True, log=True, resume=resumed,
+        yes=True, budget_usd=budget_usd, max_hours=max_hours,
+        retry_transient=10,
+        heartbeat_period_s=float(heartbeat_min) * 60.0,
+        checkpoint_every=checkpoint_every,
+    )
+    sys.exit(result.exit_code)
+
+
+# ── red ───────────────────────────────────────────────────────────────────────
+
+_RED_BANNER = """\
+[bold red]
+╔══════════════════════════════════════════════════════════════════╗
+║   ░█▀█░█▀▀░█▀▄░░░░█▄█░█▀█░█▀▄░█▀▀                                ║
+║   ░█▀▄░█▀▀░█░█░░░░█░█░█░█░█░█░█▀▀                                ║
+║   ░▀░▀░▀▀▀░▀▀░░░░░▀░▀░▀▀▀░▀▀░░▀▀▀                                ║
+║                                                                  ║
+║   No guardrails. No prompts. No backup. No undo.                 ║
+║                                                                  ║
+║   Hit Ctrl-C in the next 5 seconds to abort.                     ║
+╚══════════════════════════════════════════════════════════════════╝
+[/bold red]"""
+
+
+@main.command()
+@click.argument("task")
+@click.option("--model", "-m", default=None)
+@click.option("--provider", "-p", default=None)
+@click.option("--dir", "-d", "workdir", default=None)
+@click.option("--max-iter", default=200, show_default=True)
+@click.option("--max-hours", type=float, default=2.0, show_default=True)
+@click.option("--budget", "budget_usd", type=float, default=20.0, show_default=True)
+@click.option("--fallback", default=None)
+def red(task, model, provider, workdir, max_iter, max_hours, budget_usd, fallback):
+    """Dangerous-bypass mode. Disables prompts, backups, and the dangerous-command gate."""
+    if os.environ.get("REDTONOMOUS_I_KNOW_WHAT_IM_DOING") != "1":
+        display.print_error(
+            "Refusing to run in /red mode without REDTONOMOUS_I_KNOW_WHAT_IM_DOING=1.\n"
+            "This mode bypasses every safety. Set the env var if you really mean it."
+        )
+        sys.exit(1)
+
+    display.console.print(_RED_BANNER)
+    # Forensics: log every red-mode invocation.
+    try:
+        red_log = cfg_module.CONFIG_DIR / "red.log"
+        cfg_module.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(red_log, "a") as f:
+            from datetime import datetime as _dt
+            f.write(f"{_dt.utcnow().isoformat()}Z task={task!r}\n")
+    except OSError:
+        pass
+
+    if sys.stdout.isatty() and not os.environ.get("REDTONOMOUS_SKIP_COUNTDOWN"):
+        for n in range(5, 0, -1):
+            display.console.print(f"[red bold]Starting in {n}…[/red bold]")
+            time.sleep(1)
+
+    # Make sure the dangerous-command gate is OFF inside this process.
+    os.environ.pop("REDTONOMOUS_CONFIRM_DANGEROUS", None)
+
+    cfg, provider, model, cwd = _resolve_run_params(model, provider, workdir)
+    try:
+        adapter = _build_adapter(provider, model, cfg, fallback=fallback)
+    except ValueError as e:
+        display.print_error(str(e))
+        sys.exit(1)
+
+    from .agent import run as agent_run
+    result = agent_run(
+        task=task, adapter=adapter, provider=provider, model=model, cwd=cwd,
+        max_iterations=max_iter, backup=False, log=True,
+        yes=True, budget_usd=budget_usd, max_hours=max_hours,
+    )
+    sys.exit(result.exit_code)
+
+
+# ── goal ──────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.argument("criteria")
+@click.option("--model", "-m", default=None)
+@click.option("--provider", "-p", default=None)
+@click.option("--dir", "-d", "workdir", default=None)
+@click.option("--max-iter", default=100, show_default=True)
+@click.option("--max-retries", default=5, show_default=True,
+              help="Re-prompts after a judge says 'not achieved'")
+@click.option("--max-hours", type=float, default=1.0, show_default=True)
+@click.option("--budget", "budget_usd", type=float, default=20.0, show_default=True)
+@click.option("--judge-provider", default=None,
+              help="Provider used for the acceptance judge (default: same as agent)")
+@click.option("--judge-model", default=None)
+@click.option("--threshold", type=float, default=0.7, show_default=True,
+              help="Judge confidence required to accept")
+def goal(criteria, model, provider, workdir, max_iter, max_retries, max_hours,
+         budget_usd, judge_provider, judge_model, threshold):
+    """Goal-seeking mode: re-prompt until a judge says the criteria are met."""
+    display.print_banner()
+    cfg, provider, model, cwd = _resolve_run_params(model, provider, workdir)
+    judge_p = judge_provider or provider
+    judge_m = judge_model or model
+
+    try:
+        adapter = get_adapter(provider, model, cfg)
+        judge_adapter = get_adapter(judge_p, judge_m, cfg)
+    except ValueError as e:
+        display.print_error(str(e))
+        sys.exit(1)
+
+    from .agent import run as agent_run
+    from .judge import evaluate
+
+    display.print_info(f"[goal] judge={judge_p}/{judge_m}  threshold={threshold}")
+    task = criteria
+    feedback = ""
+    last_verdict = None
+
+    for attempt in range(1, max_retries + 1):
+        display.console.rule(f"[bold]Goal attempt {attempt}/{max_retries}[/bold]")
+        prompt = task if not feedback else f"{task}\n\nPrevious attempt was missing: {feedback}"
+        result = agent_run(
+            task=prompt, adapter=adapter, provider=provider, model=model, cwd=cwd,
+            max_iterations=max_iter, backup=(attempt == 1), log=True,
+            yes=True, budget_usd=budget_usd, max_hours=max_hours,
+        )
+        if result.exit_code in (3, 124):  # budget or wallclock
+            sys.exit(result.exit_code)
+
+        # Condense the trace for the judge.
+        trace_lines = [f"FINAL: {result.final_text[:1000]}"]
+        for step in result.session_log[-12:]:
+            trace_lines.append(
+                f"  iter {step['iter']} {step['tool']} "
+                f"→ {'error' if step.get('error') else 'ok'}: {step.get('result','')[:160]}"
+            )
+        verdict = evaluate(criteria, "\n".join(trace_lines), judge_adapter)
+        last_verdict = verdict
+        display.print_info(
+            f"[judge] achieved={verdict.achieved} confidence={verdict.confidence:.2f} "
+            f"missing={verdict.missing or '—'}"
+        )
+        if verdict.achieved and verdict.confidence >= threshold:
+            display.print_final(f"Goal achieved on attempt {attempt}.")
+            sys.exit(0)
+        feedback = verdict.missing or "(no specific reason)"
+
+    display.print_error(
+        f"Goal NOT achieved after {max_retries} attempts. "
+        f"Last verdict: {last_verdict.missing if last_verdict else '—'}"
+    )
+    sys.exit(2)
+
+
+# ── undo ──────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option("--dir", "-d", "workdir", default=None,
+              help="Working directory whose latest backup should be restored (default: cwd)")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def undo(workdir, yes):
+    """Restore the most recent backup directory for the given working dir.
+
+    Backups are created by ``redtonomous run`` (when --backup is on) as
+    ``<cwd>_backup_<ts>``. This subcommand finds the newest one matching the
+    cwd and overwrites the cwd with its contents.
+    """
+    import glob
+    import shutil
+
+    cwd = os.path.abspath(workdir or os.getcwd())
+    pattern = f"{cwd.rstrip('/')}_backup_*"
+    candidates = sorted(glob.glob(pattern))
+    if not candidates:
+        display.print_error(f"No backup directory found matching {pattern}")
+        sys.exit(1)
+    latest = candidates[-1]
+    display.print_info(f"Latest backup: {latest}")
+    if not yes:
+        if not Confirm.ask(f"Restore {latest} → {cwd}? Files will be overwritten", default=False):
+            display.print_info("Aborted.")
+            sys.exit(0)
+    # Copy each entry from the backup over the cwd. We don't blow away the cwd
+    # itself — that would invalidate the user's terminal and any open
+    # editor's working directory.
+    for entry in os.listdir(latest):
+        src = os.path.join(latest, entry)
+        dst = os.path.join(cwd, entry)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+    display.print_info(f"Restored from {latest}")
 
 
 # ── config ────────────────────────────────────────────────────────────────────

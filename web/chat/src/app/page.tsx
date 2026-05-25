@@ -62,7 +62,7 @@ export default function ChatPage() {
     setTokensOut((p) => p + tOut);
   }, []);
 
-  const cyclLayout = () => {
+  const cycleLayout = () => {
     const modes: LayoutMode[] = ["split", "terminal", "dashboard", "float"];
     const i = modes.indexOf(layout);
     setLayout(modes[(i + 1) % modes.length]);
@@ -99,7 +99,7 @@ export default function ChatPage() {
 
         {/* Layout toggle */}
         <button
-          onClick={cyclLayout}
+          onClick={cycleLayout}
           className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
           title="Cycle layout"
           aria-label={`Cycle layout (current: ${LAYOUT_LABELS[layout]})`}

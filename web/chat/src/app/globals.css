@@ -57,6 +57,22 @@
   --text-muted:   #907070;
 }
 
+[data-theme="light"] {
+  --bg:           #fafafa;
+  --surface:      #ffffff;
+  --surface-2:    #f3f3f3;
+  --border:       #e3d4d4;
+  --accent:       #c0392b;
+  --accent-muted: rgba(192, 57, 43, 0.10);
+  --accent-glow:  rgba(192, 57, 43, 0.18);
+  --text:         #1a1a1a;
+  --text-muted:   #555555;
+  --text-dim:     #999999;
+  --success:      #00a884;
+  --warning:      #d97706;
+  --error:        #c0392b;
+}
+
 /* ── Base styles ── */
 * { box-sizing: border-box; }
 
