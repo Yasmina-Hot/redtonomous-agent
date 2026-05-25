@@ -20,7 +20,44 @@ Three language implementations, one config format, same behavior:
 
 ---
 
-## Quick Start
+## Web UI — Quick Start
+
+Two browser apps + a shared Python backend. One command starts everything:
+
+```bash
+cd web
+chmod +x start.sh && ./start.sh
+```
+
+| App | URL | What it is |
+|---|---|---|
+| **Redtonomous Chat** | http://localhost:3000 | Web version of the CLI — live streaming, 4-tab canvas, model selector, session history |
+| **Red Testing (RDX)** | http://localhost:3001 | Agent eval platform — test suites, race mode, pipeline builder |
+| **API Backend** | http://localhost:8000 | FastAPI server powering both UIs |
+
+### Manual start (if you prefer)
+
+```bash
+# Backend (requires the Python CLI installed first)
+cd web/api && pip install -r requirements.txt && uvicorn main:app --port 8000 --reload
+
+# Chat UI
+cd web/chat && npm install --legacy-peer-deps && npm run dev    # → localhost:3000
+
+# RDX
+cd web/rdx  && npm install --legacy-peer-deps && npm run dev   # → localhost:3001
+```
+
+### First-time setup
+
+1. Open http://localhost:3000
+2. Click the gear icon → paste your `~/.redtonomous/config.json` (or type keys directly)
+3. Pick a provider + model from the top dropdown
+4. Type a task and hit **Run**
+
+---
+
+## CLI Quick Start
 
 ```bash
 # 1. Set your API key
@@ -138,10 +175,25 @@ Session logs are saved to `~/.redtonomous/logs/`.
 redtonomous-agent/
 ├── python/          # Python CLI (pip install -e .)
 ├── typescript/      # TypeScript CLI (npm install && npm run build)
-└── go/              # Go CLI (go install . → single binary)
+├── go/              # Go CLI (go install . → single binary)
+└── web/
+    ├── start.sh     # Start all three services
+    ├── chat/        # Next.js Chat UI → localhost:3000
+    ├── rdx/         # Next.js RDX testing platform → localhost:3001
+    └── api/         # FastAPI backend → localhost:8000
 ```
 
-All three share the same config file, same tool set, and same agent behavior.
+The three CLIs share the same config file (`~/.redtonomous/config.json`), tool set, and agent behavior. The web backend imports directly from the Python implementation.
+
+---
+
+## Deploying the Web UI
+
+Both `web/chat` and `web/rdx` are standard Next.js apps — import them to Vercel as separate projects, setting the root directory to `web/chat` or `web/rdx` respectively.
+
+The FastAPI backend (`web/api`) can be deployed to any Python host (Railway, Render, Fly.io). After deploying, set the `NEXT_PUBLIC_API_URL` environment variable in each Vercel project to point to your backend URL.
+
+GitHub Actions workflows in `.github/workflows/` handle auto-deploy when `VERCEL_TOKEN` is set as a repo secret.
 
 ---
 
